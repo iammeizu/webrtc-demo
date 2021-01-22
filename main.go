@@ -6,19 +6,17 @@ import (
 	"log"
 )
 
-
 var (
 	port = flag.String("port", ":9001", "")
 )
 
-
-func main () {
+func main() {
 	r := gin.New()
 	r.Use(gin.Logger())
 	r.Use(gin.Recovery())
 	r.Use(RequestIDMiddleWare)
 
-	r.GET("signal", Serve)
+	r.GET("/signal", Serve)
 
 	err := r.Run(*port)
 	if err != nil {
