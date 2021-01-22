@@ -1,24 +1,21 @@
-package main
+package worker
 
 import (
-	"encoding/json"
 	"context"
+	"encoding/json"
 	"fmt"
 	"github.com/gin-gonic/gin"
 	"github.com/gorilla/websocket"
+	"github.com/pion/webrtc/v3"
 	"log"
 	"net/http"
-	"github.com/pion/rtp"
-	"github.com/pion/rtcp"
-	"github.com/pion/webrtc/v3"
 	"time"
 )
 
-
 const (
 	WebsocketConTimeout = 30
-	RtcpPLIInterval = 200
-	CandidateTimeout = 3
+	RtcpPLIInterval     = 1
+	CandidateTimeout    = 3
 )
 
 var (
@@ -31,38 +28,9 @@ var (
 	}
 )
 
-type Message struct {
-	Key string		`json:"key"`
-	Value string	`json:"value"`
-}
-
-type WebrtcHandler struct {
-	pc        *webrtc.PeerConnection
-	rtpChan   chan *rtp.Packet
-	dataChan  chan string
-	candidates chan *webrtc.ICECandidate
-
-	isClosed  bool
-	wsCon *websocket.Conn
-
-}
-
-func NewWebrtcHandler() WebrtcHandler {
-	wh := WebrtcHandler{
-		pc:         nil,
-		rtpChan:    nil,
-		dataChan:   nil,
-		candidates: nil,
-		isClosed:   false,
-		wsCon:      nil,
-	}
-	return wh
-}
-
-
 func Serve(ctx *gin.Context) {
 	var err error
-	ctx1, cancel := context.WithTimeout(ctx, WebsocketConTimeout)
+	ctx1, cancel1 := context.WithTimeout(ctx, WebsocketConTimeout)
 	wh := NewWebrtcHandler()
 	wh.wsCon, err = upgrader.Upgrade(ctx.Writer, ctx.Request, nil)
 	if err != nil {
@@ -79,7 +47,7 @@ func Serve(ctx *gin.Context) {
 		if err != nil {
 			log.Println("Worker rtp close err: ", err)
 		}
-		cancel()
+		cancel1()
 	}()
 
 	wh.pc.OnICECandidate(func(c *webrtc.ICECandidate) {
@@ -90,58 +58,20 @@ func Serve(ctx *gin.Context) {
 		wh.candidates <- c
 	})
 
-	wh.pc.OnTrack(func(track *webrtc.Track, receiver *webrtc.RTPReceiver) {
-		go func() {
-			ticker := time.NewTicker(time.Millisecond * RtcpPLIInterval)
-			for range ticker.C {
-				errSend := wh.pc.WriteRTCP([]rtcp.Packet{&rtcp.PictureLossIndication{MediaSSRC: track.SSRC()}})
-				if errSend != nil {
-					fmt.Println(errSend)
-				}
-			}
-		}()
+	wh.pc.OnTrack(wh.worker.OnTrack)
 
-		for {
-			rtpPacket, readErr := track.ReadRTP()
-			if readErr != nil {
-				panic(readErr)
-			}
-			select {
-			case wh.rtpChan <- rtpPacket:
-				log.Println("rtp packet size: ", len(rtpPacket.Payload))
-			default:
-			}
-		}
-	})
-
-	wh.pc.OnDataChannel(func(d *webrtc.DataChannel) {
-		log.Printf("New DataChannel %s %d\n", d.Label(), d.ID())
-
-		d.OnOpen(func() {
-			log.Printf("Data channel '%s'-'%d' open. Random messages will now be sent to any connected DataChannels every 5 seconds\n", d.Label(), d.ID())
-			for range time.NewTicker(RtcpPLIInterval * time.Millisecond).C {
-				select {
-				case <-wh.dataChan:
-					message := <-wh.dataChan
-					log.Printf("Sending '%s'\n", message)
-
-					sendErr := d.SendText(message)
-					if sendErr != nil {
-						panic(sendErr)
-					}
-				default:
-					break
-				}
-			}
-		})
-
-		d.OnMessage(func(msg webrtc.DataChannelMessage) {
-			fmt.Printf("Message from DataChannel '%s': '%s'\n", d.Label(), string(msg.Data))
-		})
-	})
+	wh.pc.OnDataChannel(wh.worker.OnDataChannel)
 
 	wh.pc.OnICEConnectionStateChange(func(connectionState webrtc.ICEConnectionState) {
 		fmt.Printf("ICE Connection State has changed: %s\n", connectionState.String())
+
+		switch connectionState {
+		case webrtc.ICEConnectionStateDisconnected:
+			return
+		case webrtc.ICEConnectionStateConnected:
+			go wh.worker.Run(ctx)
+			cancel1()
+		}
 	})
 
 	go wh.Signal(ctx1)
@@ -199,9 +129,9 @@ func (wh *WebrtcHandler) Signal(ctx context.Context) {
 			t := time.NewTimer(time.Second * CandidateTimeout)
 			var c *webrtc.ICECandidate
 			select {
-			case <- wh.candidates:
-				c = <- wh.candidates
-			case <- t.C:
+			case <-wh.candidates:
+				c = <-wh.candidates
+			case <-t.C:
 				log.Println("Wait candidate timeout ", len(wh.candidates))
 			}
 			resp.Key, resp.Value = "candidate", c.ToJSON().Candidate

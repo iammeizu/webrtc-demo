@@ -1,4 +1,4 @@
-package main
+package middleware
 
 import (
 	uuid "github.com/satori/go.uuid"
@@ -6,11 +6,9 @@ import (
 	"time"
 )
 
-
 func GenRequestId() string {
 	ts := time.Now().Unix()
 	u := uuid.NewV4()
 	requestID := strconv.FormatInt(ts, 10) + "," + u.String()
 	return requestID
 }
-
