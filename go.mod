@@ -1,4 +1,4 @@
-module github.com/iammeizu/Worker
+module github.com/iammeizu/webrtc-demo
 
 go 1.13
 
